@@ -13,8 +13,8 @@
 //如果不一致，总是认为备份区正确，并将备份区数据覆盖至正常分区然后启动
 
 //具体参数待修改
-#define FLASH_PARAM_PAGE_START 					((uint32_t)0x00000400)
-#define FLASH_PARAM_BACKUP_PAGE_START 	((uint32_t)0x00000400)
+#define FLASH_PARAM_PAGE_START 					((uint32_t)0x08004000)	//16k~17k扇区
+#define FLASH_PARAM_BACKUP_PAGE_START 	((uint32_t)0x08004800)	//18k~19k扇区
 
 //每个扇区/参数页的大小
 #define SECTOR_SIZE           2048			//字节
@@ -22,8 +22,12 @@
 
 extern SYSFloorMsg sysFloorMsg[FLOOR_MAX];			//按照继电器ID顺序存放所有的楼层信息，占用1k内存
 
+//从指定起始地址开始读取多个数据
+void FLASH_ReadData(uint32_t startAddress,uint16_t *readData,uint16_t countToRead);
 //启动初始化，遍历flash起始地址至终止地址，将参数读入内存数组
-void FLASH_GetAllParam(void);
+void FLASH_Init(void);
+//向扇区的可写块添加一条数据
+uint8_t addParam(uint32_t pageAddress, SYSFloorMsg param);
 //向flash新增一条数据
 void FLASH_AddOneParam(SYSFloorMsg param);
 //清除所有flash参数

@@ -41,6 +41,7 @@ static uint32_t CLK_DoorOpen;
 
 int main_t()
 {
+
 	int i=0;
 	//延时函数初始化
 	delay_Init();
@@ -48,11 +49,11 @@ int main_t()
 	GPIO_Usr_Init();
 	//这个是调试打印的输出串口，完成编码后会删掉
 	uart_init(9600);
-	
+
 	printf("\r\nwhile start\r\n");
 	while(1)
 	{
-		printf("\r\nloop start\r\n");
+		//printf("\r\nloop start\r\n");
 		if(i==0){
 			LED_OFF;
 			i=1;
@@ -68,14 +69,13 @@ int main(void)
 {			
 	//系统初始化
 	//void systemInit();
+	//FLASH_CleanAllParam();
 	//这个是调试打印的输出串口，完成编码后会删掉
 	uart_init(9600);
-	//挂载参数表
-	sysTaskStatus.paramTable = sysFloorMsg;
+	//flash初始化
+	FLASH_Init();
 	//初始化状态机
 	sysTaskStatus.sysStatus = 0xD0;
-	//初始化参数表，每个bit位都置为1
-	memset(sysTaskStatus.paramTable, 0xff, FLOOR_MAX*sizeof(SYSFloorMsg));
 	//定时器控制初始化
 	TIMER_Init();
 	//延时函数初始化
@@ -87,7 +87,7 @@ int main(void)
 	//LORA模块初始化
 	Lora_Init();
 	
-	//printf("\r\nwhile start\r\n");
+	printf("\r\nwhile start\r\n");
 	
 	while(1)
   {
@@ -839,10 +839,10 @@ void msgHandler(SYS_MsgHead* msg)
 			{
 			case CLEAN_ALL_PARAM:
 				{
-					//初始化sysFloorMsg[128],每个bit位都置为1
-					memset(sysTaskStatus.paramTable, 0xff, FLOOR_MAX*sizeof(SYSFloorMsg));
 					//清除内存参数
-					//FLASH_CleanAllParam();
+					memset(sysTaskStatus.paramTable, 0xff, FLOOR_MAX*sizeof(SYSFloorMsg));
+					//清除flash参数
+					FLASH_CleanAllParam();
 					printf("清空内存参数\r\n");
 					//填充回复报文
 					payloadReply.cmdID = ACK_CLEAN_ALL_PARAM;
@@ -851,26 +851,30 @@ void msgHandler(SYS_MsgHead* msg)
 				break;
 			case SET_ONE_PARAM:
 				{
-					if(sysTaskStatus.paramTable[payload->relayID].relayID == 0xff)
+					int x;
+					//删除所有已重复的楼层ID,防止参数冲突
+					for(x=0;x<FLOOR_MAX;x++)
 					{
-						//这个参数位置还未被使用，可以配置新的参数
-						sysTaskStatus.paramTable[payload->relayID].relayID = payload->relayID;
-						sysTaskStatus.paramTable[payload->relayID].floorID = payload->floorID;
-						sysTaskStatus.paramTable[payload->relayID].needCard = payload->needCard;
-						sysTaskStatus.paramTable[payload->relayID].distance = sysTaskStatus.distance;
-						
-						printf("增加参数：floorID:%d,relayID:%d,needcard=%d,distance=%d\r\n",
+						if(sysTaskStatus.paramTable[x].relayID != 0xff && sysTaskStatus.paramTable[x].floorID == payload->floorID)
+						{
+							memset(&sysTaskStatus.paramTable[x],0xff,sizeof(SYSFloorMsg));
+							printf("重置重复楼层参数，x=%d,floorID=%d，floorID=%d\r\n",x,sysTaskStatus.paramTable[x].floorID,payload->floorID);
+						}
+					}
+					
+					//存入新的参数
+					sysTaskStatus.paramTable[payload->relayID].relayID = payload->relayID;
+					sysTaskStatus.paramTable[payload->relayID].floorID = payload->floorID;
+					sysTaskStatus.paramTable[payload->relayID].needCard = payload->needCard;
+					sysTaskStatus.paramTable[payload->relayID].distance = sysTaskStatus.distance;
+					
+					printf("增加参数：floorID:%d,relayID:%d,needcard=%d,distance=%d\r\n",
 								sysTaskStatus.paramTable[payload->relayID].floorID,sysTaskStatus.paramTable[payload->relayID].relayID,
 								sysTaskStatus.paramTable[payload->relayID].needCard,sysTaskStatus.paramTable[payload->relayID].distance);
-						
-						//FLASH_AddOneParam(param);
-						payloadReply.result = 1;
-					}else{
-						//这个参数已经被使用，本次参数配置命令驳回
-						printf("参数已被使用，本次命令驳回\r\n");
-						payloadReply.result = 0;
-					}
+					//写入flash
+					FLASH_AddOneParam(sysTaskStatus.paramTable[payload->relayID]);
 					//填充消息负载剩余字段
+					payloadReply.result = 1;
 					payloadReply.cmdID = ACK_SET_ONE_PARAM;
 				}
 				break;
@@ -884,7 +888,7 @@ void msgHandler(SYS_MsgHead* msg)
 			replyMsg.headCRC = crc8((uint8_t*)&replyMsg,HEAD_CRC_SIZE);
 			replyMsg.payloadCRC = crc8((uint8_t*)&payloadReply,sizeof(Payload_ClienReply));
 			//发送报文
-			printf("发送报文负载长度=%d,cmdID=%d,result=%d\r\n",sizeof(Payload_ClienReply),payloadReply.cmdID,payloadReply.result);
+			printf("发送res报文负载长度=%d,cmdID=%x,result=%d\r\n",sizeof(Payload_ClienReply),payloadReply.cmdID,payloadReply.result);
 			LORA_SendMsg(replyAddr,replyMsg,(char*)&payloadReply,sizeof(Payload_ClienReply));
 		}
 		break;
