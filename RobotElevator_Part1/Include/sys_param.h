@@ -6,32 +6,33 @@
 //地址宏
 #define	LORA_ADDRH_ROBOT			0x00	//机器人模块高地址
 #define	LORA_ADDRH_ELEVATOR 	0x4A	//电梯模块高地址	J
-#define LORA_ADDRH_TOPMODULE 	0x54	//梯井顶模块高地址	T
-#define	LORA_ADDRH_SOFTWARE		0x4D	//客户端软件配置器模块高地址	M
-#define	LORA_ADDRL_SOFTWARE		0x00	//客户端软件配置器模块低地址
-#define	LORA_CHANNEL_SOFTWARE	0x00	//客户端软件配置器模块信道
+#define LORA_ADDRH_RELAY		 	0x54	//中继模块高地址	T
+#define	LORA_ADDRH_OPERATOR		0x4D	//手持操作器模块高地址	M
 
 //其他宏
 #define SYSTEM_VERSION				0x01	//当前系统的版本号
+#define ELEVATOR_DEBUG_ON			1			//是否允许调试串口打印输出
 
-#define MSG_COUNTER_UPBOUND		60		//同类型信息A2/4累计数量超过60个的时候，系统重置任务
-#define TIMEOUT_MAX						10		//连续10s未收到报文，启动断连流程
+#define TIMEOUT_MAX						400		//连续200*50 = 20,000ms未收到报文，启动断连流程
+#define BUTTON_TRIGGER_DELAY	80		//循环按下楼层按钮之间的间隔时间80*50 = 4000ms
+#define	KEEP_DOOR_OPEN_MAX_PERIOD	600	//最长开门保持时间600*50 = 30,000ms
 
 #define RECV_BUFFER_MAX_SIZE 	1024	//接收缓冲区最大容量
 #define TMP_BUFFER_MAX_SIZE		65		//临时缓冲区最大65个字节
-//#define SEND_BUFFER_MAX_SIZE 	1024	//发送缓冲区最大容量
 
-#define UWB_DATA_LEN  			65  		//UWB每次接收带有距离的数据报文长度是固定的65个字节
+#define UWB_DATA_LEN  				65  	//UWB每次接收带有距离的数据报文长度是固定的65个字节
 
 #define HEAD_CRC_SIZE					18		//headCRC需要校验的头部长度
 
-#define RELAY_ID_MAX					127		//继电器ID最大值
-#define RELAY_ID_MIN					0			//继电器ID最小值
+#define SWITCH_ID_MAX					127		//继电器ID最大值
+#define SWITCH_ID_MIN					0			//继电器ID最小值
+#define FLOOR_MAX							128		//最大支持楼层数
 
-#define TOLERABLE_CAL_IS_STOP_ERR 				200		//可以容忍的距离误差
-#define TOLERABLE_CAL_CURRENT_FLOOR_ERR 				400		//可以容忍的距离误差
+#define TOLERABLE_CAL_IS_STOP_ERR 				250		//可以容忍的距离误差
+#define TOLERABLE_CAL_CURRENT_FLOOR_ERR		400		//可以容忍的距离误差
 
 #define DECODER_OPIN_NUM			16		//每个译码器的输出口数量
+
 
 
 //通信协议的前两个字段为固定值
@@ -41,12 +42,12 @@
 //通信结构体msgType取值范围
 #define ELEVATOR_TO_ROBOT 		0xB0	//电梯向机器人发送的报文
 #define	ROBOT_TO_ELEVATOR			0xB1	//机器人向电梯发送的报文
-#define	ELEVATOR_TO_TOPMODULE	0xB2	//电梯向顶部模块发送的报文
-#define	TOPMODULE_TO_ELEVATOR	0xB3	//顶部模块向电梯发送的报文
-#define	ELEVATOR_TO_CLIENT		0xB4	//电梯向客户端发送的报文
-#define	CLIENT_TO_ELEVATOR		0xB5	//客户端向电梯发送的报文
+#define	ELEVATOR_TO_RELAY			0xB2	//电梯向中继模块发送的报文
+#define	RELAY_TO_ELEVATOR			0xB3	//中继模块向电梯发送的报文
+#define	ELEVATOR_TO_OPERATOR	0xB4	//电梯向手持操作器发送的报文
+#define	OPERATOR_TO_ELEVATOR	0xB5	//手持操作器向电梯发送的报文
 
-//通信结构体cmdID取值范围
+/*通信结构体cmdID取值范围,这些宏暂不使用，直接在代码中用对应指令
 #define ROBOT_QUERY_STATUS		0xA0	//机器人查询电梯信息
 #define	ROBOT_ASK_FOR_USE			0xA1	//机器人发起使用请求
 #define	ROBOT_IS_ENTERING			0xA2	//机器人正在进入电梯
@@ -64,7 +65,7 @@
 #define ELEVATOR_STATE_ERROR	0xDD	//下发指令和电梯当前流程阶段不匹配
 #define ELEVATOR_PARAM_REJECT	0xDE	//下发参数错误，电梯回绝了这个参数
 #define ELEVATOR_BE_IN_USE		0xDF	//电梯正在被其他机器人占用，或者当前处于维修状态
-
+*/
 //客户端-轿厢的额外cmdID
 #define CLEAN_ALL_PARAM				0xE0	//清空嵌入式下所有参数
 #define SET_ONE_PARAM					0xE1	//设置单条参数
@@ -84,10 +85,10 @@ typedef enum _SYSEvent_{
 
 //内存参数表每一条的存储结构
 typedef struct _SYSFloorMsg_{
-	uint8_t	relayID;		//继电器ID(数据范围0~127)，符号位代表有没有被使用，未被使用:符号位填1，已被使用:符号位为0
-	uint8_t needCard;		//是否需要刷卡。0：不需要   1：需要
-	int16_t	floorID;		//楼层ID
 	uint32_t	distance;		//轿厢高度
+	int16_t		floorID;		//楼层ID
+	uint8_t		switchID;		//继电器ID(数据范围0~127)，符号位代表有没有被使用，未被使用:符号位填1，已被使用:符号位为0
+	uint8_t 	needCard;		//是否需要刷卡。0：不需要   1：需要刷卡继电器1 2:需要刷卡继电器2
 }SYSFloorMsg;
 
 //任务状态结构体
@@ -104,14 +105,15 @@ typedef struct _SYSTaskStatus_{
 	int16_t				floorNow;					//任务源楼层，X楼层
 	int16_t				floorDst;					//任务目标层，Y楼层
 	uint16_t			taskID;						//任务发起方ID编号，用于区分是否是同一流程命令
-	//uint16_t			tmpTaskID;				//其他
 	uint16_t      sequence;					//记录机器人方发送的序列号
 	
-	uint32_t			clk;							//定时器每50ms更新一次clk，系统每次启动clk从0开始自增长，溢出需要6年时间
+	uint64_t			clk;							//定时器每50ms更新一次clk，系统每次启动clk从0开始自增长
+	uint64_t			ledClk;						//用来记录上一次LED_POWER_ON的时间
+	
 	uint32_t			distance;					//实时距离
 	uint32_t			distanceFIFO[5];	//用来判断是否稳定处在同一楼层
 	SYSEvent			event;						//待处理事件
-	SYSFloorMsg*	paramTable;				//指向内存参数数组
+	SYSFloorMsg		paramTable[FLOOR_MAX]; //按照继电器ID顺序存放所有的楼层信息，占用1k内存
 	
 	uint16_t			loraBufHead;
 	uint16_t			loraBufTail;
@@ -171,7 +173,7 @@ typedef struct _PAYLOAD_ROBOT_REPLY_{
 typedef struct _PAYLOAD_CLIENT_MSG_{
 	uint8_t				cmdID;
 	int8_t				floorID;
-	uint8_t				relayID;
+	uint8_t				switchID;
 	uint8_t				needCard;
 }Payload_ClienMsg;
 

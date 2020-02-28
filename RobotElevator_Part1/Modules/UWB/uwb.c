@@ -1,9 +1,9 @@
 #include "uwb.h"
 
-static uint8_t DMA_RX_BUFF[UWB_DMA_RX_SIZE]; //DMA接收缓冲
+static uint8_t DMA_RX_BUFF[UWB_DMA_RX_SIZE]; //DMA接收缓冲（UWB发送直接控制寄存器，不使用DMA）
 
 //UWB模块初始化
-void UWB_Init(void)
+void UWB_ModuleInit(void)
 {
 	GPIO_InitTypeDef GPIO_InitStructure;
 	USART_InitTypeDef USART_InitStructure;
@@ -72,16 +72,16 @@ void UWB_Init(void)
 	GPIO_Init(GPIOE, &GPIO_InitStructure);					 			//根据设定参数初始化GPIOE.15
 	
 	//开启UWB模块电源
-	UWB_POWER_ON;
+	UWB_POWER_ON();
 	
-	//休眠300ms使UWB稳定工作
+	//休眠1s使UWB稳定工作
 	delay_ms(1000);
 	
 	//重新设置UWB模块地址
-	//UWB_ResetTagAddr();																			
+	UWB_SetDeviceAddr();																			
 	
 	//休眠300ms使UWB稳定工作
-	//delay_ms(300);
+	delay_ms(300);
 	
 	//清空UWB接收缓冲区重新开始接收数据
 	sysTaskStatus.uwbBufRead = sysTaskStatus.uwbBufTail;
@@ -106,7 +106,7 @@ void USART3_IRQHandler(void)
 		//				sysTaskStatus.uwbBufHead,sysTaskStatus.uwbBufTail,sysTaskStatus.uwbBufRead);
 		
 		//如果lora的读指针和buffer头部指针位置不一致，说明上一次已经处理过了缓冲区的某些数据，需要将缓冲区头指针和读指针对齐
-		if(sysTaskStatus.uwbBufRead != sysTaskStatus.uwbBufHead)
+		//if(sysTaskStatus.uwbBufRead != sysTaskStatus.uwbBufHead)
 			sysTaskStatus.uwbBufHead = sysTaskStatus.uwbBufRead;
 		
 		//将DMA的数据拷贝到循环缓冲区的尾部
@@ -120,7 +120,7 @@ void USART3_IRQHandler(void)
 			//将DMA数据接收到循环缓冲区的尾部
 			sysTaskStatus.UWB_RX_BUFF[sysTaskStatus.uwbBufTail] = DMA_RX_BUFF[offset];
 		}
-#if 0		
+#if 0	
 		printf("本次接收到的数据为：\r\n");
 		for(offset=0;offset<recvLen;offset++)
 		{
@@ -138,7 +138,7 @@ void USART3_IRQHandler(void)
 	}
 }
 //设置根据GPIO读出的拨码开关地址设置UWB的TAG地址
-void UWB_ResetTagAddr()
+void UWB_SetDeviceAddr()
 {
 	uint8_t CMD[] = "AT+SW=10000000\r\n";
 	uint8_t addr = sysTaskStatus.localAddrL;
@@ -157,14 +157,16 @@ void UWB_ResetTagAddr()
 	{
 		USART_SendData(USART3, CMD[offset]);
 		while(USART_GetFlagStatus(USART3,USART_FLAG_TC)!=SET);
+		USART_SendData(USART1, CMD[offset]);
+		while(USART_GetFlagStatus(USART1,USART_FLAG_TC)!=SET);
 	}
 }
 //从UWB数据中读取距离信息
-void UWB_getDistance(char* data)
+void UWB_GetDistanceFromMsg(char* data)
 { 
 	uint32_t offset,result = 0;
 	//过滤非自身TAG地址的数据
-	if(data[60] != '0' || data[62] != '0' ) 
+	if(data[60]-'0' != sysTaskStatus.localAddrL || data[62] != '0' ) 
 		return;	
 	//计算距离
 	for(offset=6;offset<=13;offset++)

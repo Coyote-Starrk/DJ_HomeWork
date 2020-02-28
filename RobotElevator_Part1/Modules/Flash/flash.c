@@ -1,7 +1,4 @@
 #include "flash.h"
-#include "usart.h"
-
-SYSFloorMsg sysFloorMsg[FLOOR_MAX];
 
 //从指定地址读取半字
 uint16_t FLASH_ReadHalfWord(uint32_t address)
@@ -17,72 +14,55 @@ void FLASH_ReadData(uint32_t startAddress,uint16_t *readData,uint16_t countToRea
     readData[dataIndex]=FLASH_ReadHalfWord(startAddress+dataIndex*2);
   }
 }
-//判断两条数据是否一致,1：不一致，0：一致
-//uint8_t isDiff(SYSFloorMsg x, SYSFloorMsg y)
-//{
-//	if(x.relayID != y.relayID) return 1;
-//	if(x.floorID != y.floorID) return 1;
-//	if(x.needCard != y.needCard) return 1;
-//	if(x.distance != y.distance) return 1;
-//	return 0;
-//}
 //启动初始化，遍历flash起始地址至终止地址，将参数读入内存数组
-void FLASH_Init(void)
+void FLASH_ModuleInit(void)
 {
 	SYSFloorMsg param,param_bk;
 	uint16_t pageOffset;
 	int x;
-	//初始化sysFloorMsg[128],每个bit位都置为1
-	memset(sysFloorMsg, 0xff, FLOOR_MAX*sizeof(SYSFloorMsg));
-	//挂载参数表
-	sysTaskStatus.paramTable = sysFloorMsg;
+	//初始化sysTaskStatus.paramTable[128],每个bit位都置为1
+	memset(sysTaskStatus.paramTable, 0xff, FLOOR_MAX*sizeof(SYSFloorMsg));
 	//从起始地址开始到终止地址，读入每一个参数
 	for(pageOffset=0;pageOffset<SECTOR_SIZE;pageOffset+=sizeof(SYSFloorMsg))
 	{
 		//每条数据占据四个半字
-		FLASH_ReadData(FLASH_PARAM_PAGE_START+pageOffset,(uint16_t *)&param,4);	
-		FLASH_ReadData(FLASH_PARAM_BACKUP_PAGE_START+pageOffset,(uint16_t *)&param_bk,4);
-		
-		//printf("param: relayID=%d,floorID=%d,needCard=%d,distance=%d\r\n",
-		//	param.relayID,param.floorID,param.needCard,param.distance);
-		//printf("param_bk: relayID=%d,floorID=%d,needCard=%d,distance=%d\r\n",
-		//	param_bk.relayID,param_bk.floorID,param_bk.needCard,param_bk.distance);
-		
-		if(param.relayID == 0xff && param_bk.relayID != 0xff)
+		FLASH_ReadData(FLASH_PARAM_PAGE1_START+pageOffset,(uint16_t *)&param,4);	
+		FLASH_ReadData(FLASH_PARAM_PAGE2_START+pageOffset,(uint16_t *)&param_bk,4);
+
+		if(param.switchID == 0xff && param_bk.switchID != 0xff)
 		{
 			//数据不一致的情况，备份分区比参数分区多一条参数,需要把这条加上
-			addParam(FLASH_PARAM_PAGE_START,param_bk);
+			FLASH_AddParam(FLASH_PARAM_PAGE1_START,param_bk);
 		}
 
 		//如果本条数据未被使用，当前PAGE下其后所有数据都未被使用
-		if(param_bk.relayID == 0xff)
+		if(param_bk.switchID == 0xff)
 			break;		
 		
 		//删除所有已重复的楼层ID,防止参数冲突
 		for(x=0;x<FLOOR_MAX;x++)
 		{
-			if(sysFloorMsg[x].relayID != 0xff	&& sysFloorMsg[x].floorID == param_bk.floorID)
+			if(sysTaskStatus.paramTable[x].switchID != 0xff	&& sysTaskStatus.paramTable[x].floorID == param_bk.floorID)
 			{
-				memset(&sysFloorMsg[x],0xff,sizeof(SYSFloorMsg));
+				memset(&sysTaskStatus.paramTable[x],0xff,sizeof(SYSFloorMsg));
 				printf("重置重复楼层参数\r\n");
 			}
 		}		
-		//更新参数,将数据存入内存参数表sysFloorMsg
-		printf("读出参数：relayID=%d\r\n",param_bk.relayID);
-		memcpy(&sysFloorMsg[param_bk.relayID],&param_bk,sizeof(SYSFloorMsg));
+		//更新参数,将数据存入内存参数表sysFloorMsgs
+		memcpy(&sysTaskStatus.paramTable[param_bk.switchID],&param_bk,sizeof(SYSFloorMsg));
 	}
 	for(x=0;x<FLOOR_MAX;x++)
 		{
-			if(sysFloorMsg[x].relayID != 0xff)
+			if(sysTaskStatus.paramTable[x].switchID != 0xff)
 			{
-				printf("param: relayID=%d,floorID=%d,needCard=%d,distance=%d\r\n",
-					sysFloorMsg[x].relayID,sysFloorMsg[x].floorID,sysFloorMsg[x].needCard,sysFloorMsg[x].distance);
+				printf("param: switchID=%d,floorID=%d,needCard=%d,distance=%d\r\n",sysTaskStatus.paramTable[x].switchID,
+				sysTaskStatus.paramTable[x].floorID,sysTaskStatus.paramTable[x].needCard,sysTaskStatus.paramTable[x].distance);
 			}
 		}
 }
 
 //向扇区的可写块添加一条数据
-uint8_t addParam(uint32_t pageAddress, SYSFloorMsg param)
+uint8_t FLASH_AddParam(uint32_t pageAddress, SYSFloorMsg param)
 {
 	uint16_t data;
 	uint16_t pageOffset = 0;
@@ -120,7 +100,7 @@ uint8_t addParam(uint32_t pageAddress, SYSFloorMsg param)
 }
 
 //按照内存参数表更新flash参数
-void updateFlash(uint32_t pageAddress)
+void FLASH_UpdateFlash(uint32_t pageAddress)
 {
 	uint16_t x;
 	FLASH_Unlock();
@@ -130,10 +110,10 @@ void updateFlash(uint32_t pageAddress)
 	for(x=0;x<FLOOR_MAX;x++)
 	{
 		//找到在用的参数项写入flash
-		if((sysFloorMsg[x].relayID & 0x80) == 0)
+		if((sysTaskStatus.paramTable[x].switchID & 0x80) == 0)
 		{
-			addParam(pageAddress,sysFloorMsg[x]);
-			printf("写入参数：relayID=%d\r\n",x);
+			FLASH_AddParam(pageAddress,sysTaskStatus.paramTable[x]);
+			printf("写入参数：switchID=%d\r\n",x);
 		}
 	}
 }
@@ -141,20 +121,20 @@ void updateFlash(uint32_t pageAddress)
 void FLASH_AddOneParam(SYSFloorMsg param)
 {
 	//先向备份区增加一条数据
-	if(addParam(FLASH_PARAM_BACKUP_PAGE_START,param) == 0)
+	if(FLASH_AddParam(FLASH_PARAM_PAGE2_START,param) == 0)
 	{
 		printf("备份区增加参数失败，擦除重写\r\n");
 		//如果失败了就擦除当前分区然后重新写入
-		updateFlash(FLASH_PARAM_BACKUP_PAGE_START);
+		FLASH_UpdateFlash(FLASH_PARAM_PAGE2_START);
 	}else{
 		printf("备份区，通过\r\n");
 	}
 	//再向正常区增加一条数据
-	if(addParam(FLASH_PARAM_PAGE_START,param) == 0)
+	if(FLASH_AddParam(FLASH_PARAM_PAGE1_START,param) == 0)
 	{
 		printf("正常区增加参数失败，擦除重写\r\n");
 		//如果失败了就擦除当前分区然后重新写入
-		updateFlash(FLASH_PARAM_PAGE_START);
+		FLASH_UpdateFlash(FLASH_PARAM_PAGE1_START);
 	}else{
 		printf("正常区，通过\r\n");
 	}
@@ -164,20 +144,9 @@ void FLASH_CleanAllParam(void)
 {
 	FLASH_Unlock();
 	//擦除正常区
-	FLASH_ErasePage(FLASH_PARAM_PAGE_START);
+	FLASH_ErasePage(FLASH_PARAM_PAGE1_START);
 	//擦除备份区
-	FLASH_ErasePage(FLASH_PARAM_BACKUP_PAGE_START);
+	FLASH_ErasePage(FLASH_PARAM_PAGE2_START);
 	FLASH_Lock();
 }
-//通过floorID获得relayID
-uint8_t convertFloorIDToRelayID(int16_t floorID)
-{
-	uint8_t position;
-	for(position=RELAY_ID_MIN;position<=RELAY_ID_MAX;position++)
-	{
-		if(floorID == sysFloorMsg[position].floorID)
-			return sysFloorMsg[position].relayID;
-	}
-	//执行到最后说明没找到，返回0xFF
-	return 0xFF;
-}
+

@@ -3,7 +3,6 @@
 #include "uwb.h"
 #include "gpio.h"
 #include "sys_utils.h"
-#include "usart.h"
 #include "flash.h"
 #include "string.h"
 #include "sys_param.h"
@@ -14,78 +13,86 @@
 SYSTaskStatus sysTaskStatus;
 
 //系统初始化
-void systemInit(void);
+void ELEVATOR_SystemInit(void);
 //判断请求参数是否合法
-uint8_t paramIsVaild(int16_t floorNow,int16_t floorDst);
+uint8_t ELEVATOR_ParamIsVaild(int16_t floorNow,int16_t floorDst);
 //计算当前电梯的当前楼层/停靠状态，返回值是0~127，对应楼层继电器ID，返回-1代表电梯还在移动
-int8_t calCurFloor(void);
-//由任务大小超时导致系统异常退出的，任务重置函数
-void sysMissionReset(void);
-//根据clk和event刷新GPIO输出
-void GPIO_ControlUpdate(void);
+int8_t ELEVATOR_IsElevatorStop(void);
 //获得当前distance对应的楼层位置
-int16_t getCurrentFloor(void);
+int16_t ELEVATOR_GetCurrentFloorPosition(void);
+//由任务大小超时导致系统异常退出的，任务重置函数
+void ELEVATOR_ResetSystemStatus(void);
+//根据clk和event刷新GPIO输出
+void ELEVATOR_SwitchCtrl(void);
 //消息处理
-void msgHandler(SYS_MsgHead* msg);
+void ELEVATOR_MsgHandler(SYS_MsgHead* msg);
 
 //用于记录上一个GPIO操作的时间点
-static uint32_t CLK_preGpioCtrl = 0;
-//0-非刷卡循环 1~4 floorNow层循环 5~8 floorDst层循环
-static uint8_t cardPeriod = 0;		
+static uint64_t CLK_preGpioCtrl = 0;	
 //保存上一次的distanceFIFO[5]更新时间
-static uint32_t CLK_LastFifoUpdate = 0;
+static uint64_t CLK_LastFifoUpdate = 0;
 //保存上一次报文接收的时间
-static uint32_t CLK_LastMsg = 0;
+static uint64_t CLK_LastMsg = 0;
 //用于记录开门的时刻，长超时
-static uint32_t CLK_DoorOpen;	
+static uint64_t CLK_DoorOpen;	
+//用于记录上一次循环按下floorNow的最后时刻
+static uint64_t CLK_LastCircleFloorNow;
+//用于记录上一次循环按下floorDst的最后时刻
+static uint64_t CLK_LastCircleFloorDst;
 
-int main_t()
+//0-非刷卡循环 1~4 floorNow层循环 5~8 floorDst层循环
+static uint8_t state = 0;	
+
+
+int main_t(void)
 {
-
-	int i=0;
-	//延时函数初始化
-	delay_Init();
+	//SYSFloorMsg param;
+	//int pageOffset;
+	FLASH_CleanAllParam();
+	//调试打印串口初始化/延时初始化/clk初始化
+	Utils_ModuleInit();
+	//flash初始化
+	FLASH_ModuleInit();
+	//初始化状态机
+	sysTaskStatus.sysStatus = 0xD0;
 	//gpio初始化
-	GPIO_Usr_Init();
-	//这个是调试打印的输出串口，完成编码后会删掉
-	uart_init(9600);
-
-	printf("\r\nwhile start\r\n");
+	GPIO_ModuleInit();
+	//UWB模块初始化
+	//UWB_ModuleInit();
+	//LORA模块初始化
+	//Lora_ModuleInit();
+/*
+	for(pageOffset=0;pageOffset<SECTOR_SIZE;pageOffset+=sizeof(SYSFloorMsg))
+	{
+		//每条数据占据四个半字
+		FLASH_ReadData(FLASH_PARAM_PAGE1_START+pageOffset,(uint16_t *)&param,4);
+		printf("%d: floorID=%d,switchID=%d\r\n",pageOffset,param.floorID,param.switchID);
+		if(param.distance==0xffffffff)
+			break;
+	}
+		for(pageOffset=0;pageOffset<SECTOR_SIZE;pageOffset+=sizeof(SYSFloorMsg))
+	{
+		//每条数据占据四个半字
+		FLASH_ReadData(FLASH_PARAM_PAGE2_START+pageOffset,(uint16_t *)&param,4);
+		printf("%d: floorID=%d,switchID=%d\r\n",pageOffset,param.floorID,param.switchID);
+		if(param.distance==0xffffffff)
+			break;
+	}*/
+	
 	while(1)
 	{
-		//printf("\r\nloop start\r\n");
-		if(i==0){
-			LED_OFF;
-			i=1;
-		}else{
-			LED_ON;
-			i=0;
-		}
+		printf("loop start\r\n");
+		GPIO_FloorButtonCtrl(127,CtrInput_Enable);
+		delay_ms(1000);
+		GPIO_FloorButtonCtrl(127,CtrInput_Disable);
 		delay_ms(1000);
 	}
 }
 
 int main(void)
 {			
-	//系统初始化
-	//void systemInit();
-	//FLASH_CleanAllParam();
-	//这个是调试打印的输出串口，完成编码后会删掉
-	uart_init(9600);
-	//flash初始化
-	FLASH_Init();
-	//初始化状态机
-	sysTaskStatus.sysStatus = 0xD0;
-	//定时器控制初始化
-	TIMER_Init();
-	//延时函数初始化
-	delay_Init();
-	//gpio初始化
-	GPIO_Usr_Init();
-	//UWB模块初始化
-	UWB_Init();
-	//LORA模块初始化
-	Lora_Init();
+	
+	ELEVATOR_SystemInit();
 	
 	printf("\r\nwhile start\r\n");
 	
@@ -93,7 +100,6 @@ int main(void)
   {
 		uint16_t dataSize,payloadLen;
 		//delay_ms(1000);
-		//SYSEvent_Clr(Event_Need_Report_Status);
 		//一、更新一次UWB读取到的距离信息	
 		while(sysTaskStatus.uwbBufRead != sysTaskStatus.uwbBufTail &&
 					(sysTaskStatus.uwbBufRead+1)%RECV_BUFFER_MAX_SIZE != sysTaskStatus.uwbBufTail)
@@ -124,7 +130,7 @@ int main(void)
 					//1.3 根据报文计算实时距离
 					printf("READ:%d - ",sysTaskStatus.uwbBufRead);
 #endif					
-					UWB_getDistance((char*)sysTaskStatus.TMP_BUFFER);
+					UWB_GetDistanceFromMsg((char*)sysTaskStatus.TMP_BUFFER);
 				}else{
 					break;
 				}
@@ -143,8 +149,8 @@ int main(void)
 			sysTaskStatus.distanceFIFO[4] = sysTaskStatus.distance;
 			//更新fifoClk
 			CLK_LastFifoUpdate = sysTaskStatus.clk;
-			//printf("FIFO update:%d-%d-%d-%d-%d\r\n",sysTaskStatus.distanceFIFO[0],sysTaskStatus.distanceFIFO[1],
-			//			sysTaskStatus.distanceFIFO[2],sysTaskStatus.distanceFIFO[3],sysTaskStatus.distanceFIFO[4]);
+			printf("FIFO update:%d-%d-%d-%d-%d\r\n",sysTaskStatus.distanceFIFO[0],sysTaskStatus.distanceFIFO[1],
+						sysTaskStatus.distanceFIFO[2],sysTaskStatus.distanceFIFO[3],sysTaskStatus.distanceFIFO[4]);
 		}		
 		//二、获取一帧从LORA缓冲区接收到的报文
 		
@@ -201,7 +207,7 @@ int main(void)
 							{
 								//payload部分校验通过
 								//2.4 跳入消息处理函数，执行报文处理
-								msgHandler((SYS_MsgHead*)sysTaskStatus.TMP_BUFFER);
+								ELEVATOR_MsgHandler((SYS_MsgHead*)sysTaskStatus.TMP_BUFFER);
 								//通知状态机，需要在流程的末尾向机器人上报一次自身状态
 								//printf("Deal msg;\r\n");
 								//移动read指针
@@ -236,7 +242,7 @@ int main(void)
 		}
 	
 		//三、根据clk更新GPIO输出控制
-		GPIO_ControlUpdate();
+		ELEVATOR_SwitchCtrl();
 		
 		//四、电梯状态机
 		if(sysTaskStatus.sysStatus == 0xD0)				//电梯处于空闲态
@@ -250,105 +256,101 @@ int main(void)
 		else if(sysTaskStatus.sysStatus == 0xD1)	//电梯正在向机器人所在楼层移动
 		{
 			//计算电梯当前停靠状态
-			int8_t res = calCurFloor();
+			int8_t res = ELEVATOR_IsElevatorStop();
 			if(res == -1)
 			{
-				//电梯尚未停靠，开始循环按下机器人所在楼层按钮（函数可以多次调用）
-				SYSEvent_Set(Event_CirTrigger_FloorNow);
-				printf("电梯未停靠，开始触发第一个\r\n");
+				//电梯尚未停靠，按下机器人所在楼层按钮
+				if(sysTaskStatus.clk - CLK_LastCircleFloorNow > BUTTON_TRIGGER_DELAY)
+					SYSEvent_Set(Event_CirTrigger_FloorNow);
+				//printf("电梯未停靠，开始触发第一个\r\n");
 			}else{
 				//电梯停靠了
 				if(sysTaskStatus.paramTable[res].floorID == sysTaskStatus.floorNow)
 				{
-					//电梯已经停靠到了第一个任务楼层，开始循环按下第一个任务楼层的按钮，允许重复调用
-					SYSEvent_Clr(Event_CirTrigger_FloorNow);
-					printf("停止触发第一个\r\n");
+					//电梯已经停靠到了第一个任务楼层
 					//按下开门按键
-					DOOR_OPEN;
+					DOOR_OPEN();
 					//记录开门时间
 					CLK_DoorOpen = sysTaskStatus.clk;
 					//修改自身状态
 					sysTaskStatus.sysStatus = 0xD2;
 				}else{
 					//电梯停靠在了任务楼层之外的其他楼层，循环按下机器人所在楼层按钮（函数可以多次调用）
-					SYSEvent_Set(Event_CirTrigger_FloorNow);
-					printf("电梯停靠在别的楼层，开始触发第一个\r\n");
+					if(sysTaskStatus.clk - CLK_LastCircleFloorNow > BUTTON_TRIGGER_DELAY)
+						SYSEvent_Set(Event_CirTrigger_FloorNow);
+					//printf("电梯停靠在别的楼层，开始触发第一个\r\n");
 				}
 			}
 		}
 		else if(sysTaskStatus.sysStatus == 0xD2)	//电梯已经到达机器人所在楼层，等待机器人进入
 		{
-			if(sysTaskStatus.clk - CLK_DoorOpen > 1200)
+			if(sysTaskStatus.clk - CLK_DoorOpen > KEEP_DOOR_OPEN_MAX_PERIOD)
 			{
-				printf("开门超时断连\r\n");
-				//如果已经保持开门状态超过50*200=10000ms，认为连接超时，执行断连流程，一分钟
-				sysMissionReset();
-				//开门失能
-				DOOR_CLOSE;
+				printf("20s开门超时断连\r\n");
+				//如果已经保持开门状态超时，执行断连流程
+				ELEVATOR_ResetSystemStatus();
 			}else{
 				//未超时，保持按下开门按键
-				DOOR_OPEN;
+				DOOR_OPEN();
 				//如果有机器人已经进入电梯，则让电梯转入0xD1状态
 				if(sysTaskStatus.event & Event_Robot_In)
 				{
 					sysTaskStatus.sysStatus = 0xD3;
-					DOOR_CLOSE;
+					DOOR_CLOSE();
 				}
 			}
 		}
 		else if(sysTaskStatus.sysStatus == 0xD3)	//电梯正在向机器人任务要求楼层移动
 		{
 			//计算电梯当前停靠状态
-			int8_t res = calCurFloor();
+			int8_t res = ELEVATOR_IsElevatorStop();
 			if(res == -1)
 			{
 				//电梯尚未停靠
-				SYSEvent_Set(Event_CirTrigger_FloorDst);
-				printf("电梯未停靠，开始触发第二个\r\n");
+				if(sysTaskStatus.clk - CLK_LastCircleFloorDst > BUTTON_TRIGGER_DELAY)
+					SYSEvent_Set(Event_CirTrigger_FloorDst);
+				//printf("电梯未停靠，开始触发第二个\r\n");
 			}else{
 				//电梯停靠了
 				if(sysTaskStatus.paramTable[res].floorID == sysTaskStatus.floorDst)
 				{
 					//电梯已经停靠到了第二个任务楼层
-					SYSEvent_Clr(Event_CirTrigger_FloorDst);
-					printf("停止触发第二个\r\n");
 					//按下开门按键
-					DOOR_OPEN;
+					DOOR_OPEN();
 					//记录开门时间
 					CLK_DoorOpen = sysTaskStatus.clk;
 					//修改自身状态
 					sysTaskStatus.sysStatus = 0xD4;
 				}else{
 					//电梯停靠在了任务楼层之外的其他楼层
-					SYSEvent_Set(Event_CirTrigger_FloorDst);
-					printf("电梯停靠在别的楼层，开始触发第二个\r\n");
+					if(sysTaskStatus.clk - CLK_LastCircleFloorDst > BUTTON_TRIGGER_DELAY)
+						SYSEvent_Set(Event_CirTrigger_FloorDst);
+					//printf("电梯停靠在别的楼层，开始触发第二个\r\n");
 				}
 			}
 		}
 		else if(sysTaskStatus.sysStatus == 0xD4)	//电梯已经到达机器人目的楼层，等待机器人退出
 		{
-			if(sysTaskStatus.clk - CLK_DoorOpen > 1200)
+			if(sysTaskStatus.clk - CLK_DoorOpen > KEEP_DOOR_OPEN_MAX_PERIOD)
 			{
-				printf("1min开门超时断连\r\n");
-				//如果已经保持开门状态超过50*200=10000ms，认为连接超时，执行断连流程，一分钟
-				sysMissionReset();
-				//开门失能
-				DOOR_CLOSE;
+				printf("20s开门超时断连\r\n");
+				//如果已经保持开门状态超时，执行断连流程
+				ELEVATOR_ResetSystemStatus();
 			}else{
 				//未超时，保持按下开门按键
-				DOOR_OPEN;
+				DOOR_OPEN();
 				//如果有机器人已经离开电梯，则让电梯转入0xD0状态
 				if(sysTaskStatus.event & Event_Robot_Out)
 				{
 					sysTaskStatus.sysStatus = 0xD0;
-					DOOR_CLOSE;
+					DOOR_CLOSE();
 					SYSEvent_Set(Event_Quit_Mission);
 				}
 			}
 		}
 
 		//printf("检查是否需要上报报文\r\n");
-		//根据标志位决定是否回复或上报电梯状态
+		//五、根据标志位决定是否回复或上报电梯状态
 		if(sysTaskStatus.event & Event_Need_Report_Status)
 		{
 			ADDR_ToSend replyAddr;
@@ -367,7 +369,7 @@ int main(void)
 			replyPayload.cmdID = sysTaskStatus.sysStatus;
 			replyPayload.Reserved = 0;
 			replyPayload.taskID = sysTaskStatus.taskID;
-			replyPayload.floorNow = getCurrentFloor();
+			replyPayload.floorNow = ELEVATOR_GetCurrentFloorPosition();
 			if(sysTaskStatus.sysStatus == 0xD0 || sysTaskStatus.sysStatus == 0xD1)
 				replyPayload.floorDst = sysTaskStatus.floorNow;
 			else
@@ -394,15 +396,18 @@ int main(void)
 			SYSEvent_Clr(Event_Need_Report_Status);
 			//如果这是一帧a5报文的回复，执行完这帧回复之后需要执行重置流程
 			if(sysTaskStatus.event & Event_Quit_Mission)
-				sysMissionReset();	
+				ELEVATOR_ResetSystemStatus();	
 		}		
-		//轿厢如果在运行态，并且超过100*50=5000ms未收到机器人方的信息，走断连流程
-		if(sysTaskStatus.sysStatus != 0xD0 && sysTaskStatus.clk - CLK_LastMsg > 200)
+		//六、轿厢如果在运行态，并且超过100*50=5000ms未收到机器人方的信息，走断连流程
+		if(sysTaskStatus.sysStatus != 0xD0 && sysTaskStatus.clk - CLK_LastMsg > TIMEOUT_MAX)
 		{
 			printf("10s消息间隔超时断连\r\n");
 			//重置运行状态
-			sysMissionReset();
+			ELEVATOR_ResetSystemStatus();
 		}
+		//七、如果LED开启的时间超过了100ms，则关闭
+		if(sysTaskStatus.clk - sysTaskStatus.ledClk > 2)
+			LED_POWER_OFF();
 		//每个循环延时20ms
 		delay_ms(20);
   }//end while(1)
@@ -410,84 +415,85 @@ int main(void)
 }
  
 //系统初始化
-void systemInit(void)
+void ELEVATOR_SystemInit(void)
 {
-	//挂载参数表
-	sysTaskStatus.paramTable = sysFloorMsg;
-	//定时器控制初始化
-	TIMER_Init();
-	//延时函数初始化
-	delay_Init();
+	//调试打印串口初始化/延时初始化/clk初始化
+	Utils_ModuleInit();
+	//flash初始化
+	FLASH_ModuleInit();
+	//初始化状态机
+	sysTaskStatus.sysStatus = 0xD0;
 	//gpio初始化
-	GPIO_Usr_Init();
-	//这个是调试打印的输出串口，完成编码后会删掉
-	uart_init(9600);
+	GPIO_ModuleInit();
 	//UWB模块初始化
-	//UWB_Init();
+	UWB_ModuleInit();
 	//LORA模块初始化
-	//Lora_Init();
+	Lora_ModuleInit();
 }
 //判断请求参数是否合法
-uint8_t paramIsVaild(int16_t floorNow,int16_t floorDst)
+uint8_t ELEVATOR_ParamIsVaild(int16_t floorNow,int16_t floorDst)
 {
 	uint8_t position;
 	uint8_t isFloorNowExist=0,isFloorDstExist=0;
-	for(position=RELAY_ID_MIN;position<=RELAY_ID_MAX;position++)
+	
+	for(position=SWITCH_ID_MIN; position<=SWITCH_ID_MAX; position++)
 	{
 		if(floorNow == sysTaskStatus.paramTable[position].floorID)
 			isFloorNowExist = 1;
 		if(floorDst == sysTaskStatus.paramTable[position].floorID)
 			isFloorDstExist = 1;
 	}
+	
 	if(isFloorNowExist && isFloorDstExist)
 		return 1;
+	
 	return 0;
 }
 //计算当前电梯的停靠状态，返回值是0~127，对应楼层继电器ID，返回-1代表电梯还在移动
-int8_t calCurFloor(void)
+int8_t ELEVATOR_IsElevatorStop(void)
 {
-	uint8_t relayID;
+	uint8_t switchID;
 	uint32_t upBound,loBound;
-	for(relayID = RELAY_ID_MIN;relayID<=RELAY_ID_MAX;relayID++)
+	for(switchID = SWITCH_ID_MIN;switchID<=SWITCH_ID_MAX;switchID++)
 	{
 		//在参数表中寻找和FIFO[0]对应的楼层
-		if(sysTaskStatus.distanceFIFO[0] < sysTaskStatus.paramTable[relayID].distance + TOLERABLE_CAL_IS_STOP_ERR && 
-				sysTaskStatus.distanceFIFO[0] > sysTaskStatus.paramTable[relayID].distance - TOLERABLE_CAL_IS_STOP_ERR)
+		if(sysTaskStatus.distanceFIFO[0] < sysTaskStatus.paramTable[switchID].distance + TOLERABLE_CAL_IS_STOP_ERR && 
+				sysTaskStatus.distanceFIFO[0] > sysTaskStatus.paramTable[switchID].distance - TOLERABLE_CAL_IS_STOP_ERR)
 			break;
 	}
 	//没找到
-	if(relayID == RELAY_ID_MAX+1) return -1;
+	if(switchID == SWITCH_ID_MAX+1) return -1;
 
 	//执行到这里relayID变量中保存了对应FIFO[0]的停靠楼层，接下来验证FIFO[1/2/3/4]的楼层是否和FIFO[0]一致
-	upBound = sysTaskStatus.paramTable[relayID].distance + TOLERABLE_CAL_IS_STOP_ERR;
-	loBound = sysTaskStatus.paramTable[relayID].distance - TOLERABLE_CAL_IS_STOP_ERR;
+	upBound = sysTaskStatus.paramTable[switchID].distance + TOLERABLE_CAL_IS_STOP_ERR;
+	loBound = sysTaskStatus.paramTable[switchID].distance - TOLERABLE_CAL_IS_STOP_ERR;
 	if(sysTaskStatus.distanceFIFO[1] < upBound && sysTaskStatus.distanceFIFO[1] > loBound &&
 		 sysTaskStatus.distanceFIFO[2] < upBound && sysTaskStatus.distanceFIFO[2] > loBound &&
 		 sysTaskStatus.distanceFIFO[3] < upBound && sysTaskStatus.distanceFIFO[3] > loBound &&
 		 sysTaskStatus.distanceFIFO[4] < upBound && sysTaskStatus.distanceFIFO[4] > loBound )
-		return relayID;
+		return switchID;
 	return -1;
 }
 //获得当前distance对应的楼层位置
-int16_t getCurrentFloor(void)
+int16_t ELEVATOR_GetCurrentFloorPosition(void)//修改，必须输出一个楼层（TODO）
 {
-	uint8_t relayID;
-	for(relayID = RELAY_ID_MIN;relayID<=RELAY_ID_MAX;relayID++)
+	uint8_t switchID;
+	for(switchID = SWITCH_ID_MIN;switchID<=SWITCH_ID_MAX;switchID++)
 	{
 		//在参数表中寻找和FIFO[0]对应的楼层
-		if(sysTaskStatus.paramTable[relayID].relayID != 0xff)
+		if(sysTaskStatus.paramTable[switchID].switchID != 0xff)
 		{	
-			if(sysTaskStatus.distance < sysTaskStatus.paramTable[relayID].distance + TOLERABLE_CAL_IS_STOP_ERR &&
-				sysTaskStatus.distance > sysTaskStatus.paramTable[relayID].distance - TOLERABLE_CAL_IS_STOP_ERR)
+			if(sysTaskStatus.distance < sysTaskStatus.paramTable[switchID].distance + TOLERABLE_CAL_IS_STOP_ERR &&
+				sysTaskStatus.distance > sysTaskStatus.paramTable[switchID].distance - TOLERABLE_CAL_IS_STOP_ERR)
 			{
-				return sysTaskStatus.paramTable[relayID].floorID;
+				return sysTaskStatus.paramTable[switchID].floorID;
 			}
 		}
 	}
 	return 0xffff;
 }
 //由任务大小超时导致系统异常退出的，任务重置函数
-void sysMissionReset(void)
+void ELEVATOR_ResetSystemStatus(void)
 {
 	//清空所有事件
 	sysTaskStatus.event = Event_0;
@@ -500,95 +506,105 @@ void sysMissionReset(void)
 	sysTaskStatus.taskID = 0;
 	//系统状态转移到空闲态
 	sysTaskStatus.sysStatus = 0xD0;
-	//保证OPEN_DOOR的gpio输出为低电平
-	DOOR_CLOSE;
+	//保证OPEN_DOOR的gpio输出为高电平
+	DOOR_CLOSE();
 }
 //根据clk和event刷新GPIO输出
-void GPIO_ControlUpdate(void)
+void ELEVATOR_SwitchCtrl(void)
 {
 	uint32_t clk = sysTaskStatus.clk;
 	//开始进入流程
-	if(cardPeriod == 0 && (sysTaskStatus.event & Event_CirTrigger_FloorNow || sysTaskStatus.event & Event_CirTrigger_FloorDst))
+	if(state == 0 && (sysTaskStatus.event & Event_CirTrigger_FloorNow || sysTaskStatus.event & Event_CirTrigger_FloorDst))
 	{
 		//更新时间
 		CLK_preGpioCtrl = clk;
-		printf("start time clk = %d\r\n",CLK_preGpioCtrl);
+		printf("start time clk = %lld\r\n",CLK_preGpioCtrl);
 		//记录刷卡流程
-		if(sysTaskStatus.event & Event_CirTrigger_FloorNow) cardPeriod = 1;
-		if(sysTaskStatus.event & Event_CirTrigger_FloorDst) cardPeriod = 5;
+		if(sysTaskStatus.event & Event_CirTrigger_FloorNow) state = 1;
+		if(sysTaskStatus.event & Event_CirTrigger_FloorDst) state = 5;
 		
-		if(cardPeriod == 1 && sysTaskStatus.paramTable[convertFloorIDToRelayID(sysTaskStatus.floorNow)].needCard == 1)
+		if(state == 1 && sysTaskStatus.paramTable[convertFloorIDToSwitchID(sysTaskStatus.floorNow)].needCard == 1)
 		{
 			//控制刷卡继电器拉高电平（TODO）
-			printf("楼层%d刷卡失能,对应继电器%d,clk=%d\r\n",sysTaskStatus.floorNow,convertFloorIDToRelayID(sysTaskStatus.floorNow),clk);
+			printf("楼层%d刷卡失能,对应继电器%d,clk=%d\r\n",sysTaskStatus.floorNow,convertFloorIDToSwitchID(sysTaskStatus.floorNow),clk);
 		}
-		if(cardPeriod == 2 && sysTaskStatus.paramTable[convertFloorIDToRelayID(sysTaskStatus.floorDst)].needCard == 1)
+		if(state == 2 && sysTaskStatus.paramTable[convertFloorIDToSwitchID(sysTaskStatus.floorDst)].needCard == 1)
 		{
 			//控制刷卡继电器拉高电平（TODO）
-			printf("楼层%d刷卡失能，对应继电器%d,clk=%d\r\n",sysTaskStatus.floorDst,convertFloorIDToRelayID(sysTaskStatus.floorDst),clk);
+			printf("楼层%d刷卡失能，对应继电器%d,clk=%d\r\n",sysTaskStatus.floorDst,convertFloorIDToSwitchID(sysTaskStatus.floorDst),clk);
 		}
 	}
 	//按下开门按钮
-	if((cardPeriod == 1 || cardPeriod == 5) && (clk-CLK_preGpioCtrl > 2))
+	if((state == 1 || state == 5) && (clk-CLK_preGpioCtrl > 2))
 	{
 		//更新时间
 		CLK_preGpioCtrl = clk;
-		if(cardPeriod == 1)
+		if(state == 1)
 		{
-			floorButtonControl(sysTaskStatus.floorNow,CtrInput_Enable);	
-			printf("按下%d层按钮，对应继电器%d,clk=%d\r\n",sysTaskStatus.floorNow,convertFloorIDToRelayID(sysTaskStatus.floorNow),clk);
+			GPIO_FloorButtonCtrl(sysTaskStatus.floorNow,CtrInput_Enable);	
+			printf("按下%d层按钮，对应继电器%d,clk=%d\r\n",sysTaskStatus.floorNow,convertFloorIDToSwitchID(sysTaskStatus.floorNow),clk);
 		}
-		if(cardPeriod == 5)
+		if(state == 5)
 		{
-			floorButtonControl(sysTaskStatus.floorDst,CtrInput_Enable);
-			printf("按下%d层按钮，对应继电器%d,clk=%d\r\n",sysTaskStatus.floorDst,convertFloorIDToRelayID(sysTaskStatus.floorDst),clk);
+			GPIO_FloorButtonCtrl(sysTaskStatus.floorDst,CtrInput_Enable);
+			printf("按下%d层按钮，对应继电器%d,clk=%d\r\n",sysTaskStatus.floorDst,convertFloorIDToSwitchID(sysTaskStatus.floorDst),clk);
 		}
-		cardPeriod++;
+		state++;
 	}
 	//抬起开门按钮
-	if((cardPeriod == 2 || cardPeriod == 6) && (clk-CLK_preGpioCtrl > 22))
+	if((state == 2 || state == 6) && (clk-CLK_preGpioCtrl > 22))
 	{
 		//更新时间
 		CLK_preGpioCtrl = clk;
-		if(cardPeriod == 2)
+		if(state == 2)
 		{
-			floorButtonControl(sysTaskStatus.floorNow,CtrInput_Disable);
-			printf("抬起%d层按钮，对应继电器%d,clk=%d\r\n",sysTaskStatus.floorNow,convertFloorIDToRelayID(sysTaskStatus.floorNow),clk);
+			GPIO_FloorButtonCtrl(sysTaskStatus.floorNow,CtrInput_Disable);
+			printf("抬起%d层按钮，对应继电器%d,clk=%d\r\n",sysTaskStatus.floorNow,convertFloorIDToSwitchID(sysTaskStatus.floorNow),clk);
 		}			
-		if(cardPeriod == 6)
+		if(state == 6)
 		{
-			floorButtonControl(sysTaskStatus.floorDst,CtrInput_Disable);
-			printf("抬起%d层按钮，对应继电器%d,clk=%d\r\n",sysTaskStatus.floorDst,convertFloorIDToRelayID(sysTaskStatus.floorDst),clk);
+			GPIO_FloorButtonCtrl(sysTaskStatus.floorDst,CtrInput_Disable);
+			printf("抬起%d层按钮，对应继电器%d,clk=%d\r\n",sysTaskStatus.floorDst,convertFloorIDToSwitchID(sysTaskStatus.floorDst),clk);
 		}
-		cardPeriod++;
+		state++;
 	}
 	//取消刷卡
-	if((cardPeriod == 3 || cardPeriod == 7) && (clk-CLK_preGpioCtrl > 2)) 
+	if((state == 3 || state == 7) && (clk-CLK_preGpioCtrl > 2)) 
 	{
 		//更新时间
 		CLK_preGpioCtrl = clk;
-		if(cardPeriod == 1 && sysTaskStatus.paramTable[convertFloorIDToRelayID(sysTaskStatus.floorNow)].needCard == 1)
+		if(state == 1 && sysTaskStatus.paramTable[convertFloorIDToSwitchID(sysTaskStatus.floorNow)].needCard == 1)
 		{
 			//控制刷卡继电器拉低电平（TODO）
-			printf("楼层%d刷卡失能,对应继电器%d,clk=%d\r\n",sysTaskStatus.floorNow,convertFloorIDToRelayID(sysTaskStatus.floorNow),clk);
+			printf("楼层%d刷卡失能,对应继电器%d,clk=%d\r\n",sysTaskStatus.floorNow,convertFloorIDToSwitchID(sysTaskStatus.floorNow),clk);
 		}
-		if(cardPeriod == 2 && sysTaskStatus.paramTable[convertFloorIDToRelayID(sysTaskStatus.floorDst)].needCard == 1)
+		if(state == 2 && sysTaskStatus.paramTable[convertFloorIDToSwitchID(sysTaskStatus.floorDst)].needCard == 1)
 		{
 			//控制刷卡继电器拉低电平（TODO）
-			printf("楼层%d刷卡失能，对应继电器%d,clk=%d\r\n",sysTaskStatus.floorDst,convertFloorIDToRelayID(sysTaskStatus.floorDst),clk);
+			printf("楼层%d刷卡失能，对应继电器%d,clk=%d\r\n",sysTaskStatus.floorDst,convertFloorIDToSwitchID(sysTaskStatus.floorDst),clk);
 		}
-		cardPeriod++;
+		state++;
 	}
 	//延时2s
-	if((cardPeriod == 4 || cardPeriod == 8) && (clk-CLK_preGpioCtrl > 60)) 
+	if((state == 4 || state == 8) && (clk-CLK_preGpioCtrl > 2)) 
 	{
-		cardPeriod = 0;
+		if(state == 4)
+		{
+			SYSEvent_Clr(Event_CirTrigger_FloorNow);
+			CLK_LastCircleFloorNow = sysTaskStatus.clk;
+		}
+		if(state == 8)
+		{
+			SYSEvent_Clr(Event_CirTrigger_FloorDst);
+			CLK_LastCircleFloorDst = sysTaskStatus.clk;
+		}
+		state = 0;
 		printf("一轮按键结束,clk=%d\r\n",clk);
 	}
 }
 
 //消息处理
-void msgHandler(SYS_MsgHead* msg)
+void ELEVATOR_MsgHandler(SYS_MsgHead* msg)
 {
 	ADDR_ToSend replyAddr;
 	SYS_MsgHead replyMsg;
@@ -611,7 +627,7 @@ void msgHandler(SYS_MsgHead* msg)
 	switch(msg->msgType)
 	{
 	case ROBOT_TO_ELEVATOR:
-	case TOPMODULE_TO_ELEVATOR:
+	case RELAY_TO_ELEVATOR://
 		{
 			//解析报文的payload部分
 			Payload_RobotMsg* payload = (Payload_RobotMsg*)(msg+1);
@@ -635,7 +651,7 @@ void msgHandler(SYS_MsgHead* msg)
 			case 0xA1:	//机器人向电梯请求使用
 				{
 					//判断参数是否合法
-					if(paramIsVaild(payload->floorNow,payload->floorDst))
+					if(ELEVATOR_ParamIsVaild(payload->floorNow,payload->floorDst))
 					{
 						//根据系统状态判断是否接受请求
 						if(sysTaskStatus.sysStatus == 0xD0)//电梯空闲态，接受使用请求
@@ -788,7 +804,7 @@ void msgHandler(SYS_MsgHead* msg)
 					if(sysTaskStatus.taskID == payload->taskID)
 					{
 						//重置状态
-						sysMissionReset();
+						ELEVATOR_ResetSystemStatus();
 						//回复0xD0空闲态，代表已被重置
 						payloadReply.cmdID = 0xD0;
 						isNeedSend = 1;
@@ -811,7 +827,7 @@ void msgHandler(SYS_MsgHead* msg)
 				//填充消息负载剩余字段
 				payloadReply.Reserved = 0;
 				payloadReply.taskID = payload->taskID;
-				payloadReply.floorNow = getCurrentFloor();
+				payloadReply.floorNow = ELEVATOR_GetCurrentFloorPosition();
 				if(sysTaskStatus.sysStatus == 0xD0 || sysTaskStatus.sysStatus == 0xD1)
 					payloadReply.floorDst = payload->floorNow;
 				else
@@ -828,7 +844,7 @@ void msgHandler(SYS_MsgHead* msg)
 			}
 		}
 		break;
-	case CLIENT_TO_ELEVATOR:
+	case OPERATOR_TO_ELEVATOR://OPERATOR
 		{
 			//解析报文的payload部分
 			Payload_ClienMsg* payload = (Payload_ClienMsg*)(msg+1);
@@ -855,7 +871,7 @@ void msgHandler(SYS_MsgHead* msg)
 					//删除所有已重复的楼层ID,防止参数冲突
 					for(x=0;x<FLOOR_MAX;x++)
 					{
-						if(sysTaskStatus.paramTable[x].relayID != 0xff && sysTaskStatus.paramTable[x].floorID == payload->floorID)
+						if(sysTaskStatus.paramTable[x].switchID != 0xff && sysTaskStatus.paramTable[x].floorID == payload->floorID)
 						{
 							memset(&sysTaskStatus.paramTable[x],0xff,sizeof(SYSFloorMsg));
 							printf("重置重复楼层参数，x=%d,floorID=%d，floorID=%d\r\n",x,sysTaskStatus.paramTable[x].floorID,payload->floorID);
@@ -863,16 +879,16 @@ void msgHandler(SYS_MsgHead* msg)
 					}
 					
 					//存入新的参数
-					sysTaskStatus.paramTable[payload->relayID].relayID = payload->relayID;
-					sysTaskStatus.paramTable[payload->relayID].floorID = payload->floorID;
-					sysTaskStatus.paramTable[payload->relayID].needCard = payload->needCard;
-					sysTaskStatus.paramTable[payload->relayID].distance = sysTaskStatus.distance;
+					sysTaskStatus.paramTable[payload->switchID].switchID = payload->switchID;
+					sysTaskStatus.paramTable[payload->switchID].floorID = payload->floorID;
+					sysTaskStatus.paramTable[payload->switchID].needCard = payload->needCard;
+					sysTaskStatus.paramTable[payload->switchID].distance = sysTaskStatus.distance;
 					
 					printf("增加参数：floorID:%d,relayID:%d,needcard=%d,distance=%d\r\n",
-								sysTaskStatus.paramTable[payload->relayID].floorID,sysTaskStatus.paramTable[payload->relayID].relayID,
-								sysTaskStatus.paramTable[payload->relayID].needCard,sysTaskStatus.paramTable[payload->relayID].distance);
+								sysTaskStatus.paramTable[payload->switchID].floorID,sysTaskStatus.paramTable[payload->switchID].switchID,
+								sysTaskStatus.paramTable[payload->switchID].needCard,sysTaskStatus.paramTable[payload->switchID].distance);
 					//写入flash
-					FLASH_AddOneParam(sysTaskStatus.paramTable[payload->relayID]);
+					FLASH_AddOneParam(sysTaskStatus.paramTable[payload->switchID]);
 					//填充消息负载剩余字段
 					payloadReply.result = 1;
 					payloadReply.cmdID = ACK_SET_ONE_PARAM;
@@ -883,7 +899,7 @@ void msgHandler(SYS_MsgHead* msg)
 			}
 			//填充报文剩余字段
 			payloadReply.reserved = 0;
-			replyMsg.msgType = ELEVATOR_TO_CLIENT;
+			replyMsg.msgType = ELEVATOR_TO_OPERATOR;
 			replyMsg.payloadLen = sizeof(Payload_ClienReply);
 			replyMsg.headCRC = crc8((uint8_t*)&replyMsg,HEAD_CRC_SIZE);
 			replyMsg.payloadCRC = crc8((uint8_t*)&payloadReply,sizeof(Payload_ClienReply));

@@ -1,7 +1,7 @@
 #include "gpio.h"
 
 //GPIO初始化，包括板上电梯控制按钮，LED数据灯，拨码开关
-void GPIO_Usr_Init(void)
+void GPIO_ModuleInit(void)
 {
 	GPIO_InitTypeDef GPIO_InitStructure;
  	RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA|RCC_APB2Periph_GPIOB|RCC_APB2Periph_GPIOC|RCC_APB2Periph_GPIOD|RCC_APB2Periph_GPIOE,ENABLE);//使能PORTA,PORTB,PORTC,PORTD,PORTE时钟
@@ -54,7 +54,7 @@ void GPIO_Usr_Init(void)
 	GPIO_Init(GPIOC, &GPIO_InitStructure);//初始化下拉输入GPIOC4.5`	
 	
 	//根据拨码开关读入本地的地址和信道
-	Update_Current_ADDRL();
+	GPIO_GetDeviceAddr();
 	
 	//所有的译码器使能管脚一开始都要处在高电平位置
 	GPIO_SetBits(GPIOD,GPIO_Pin_8);
@@ -67,15 +67,15 @@ void GPIO_Usr_Init(void)
 	GPIO_SetBits(GPIOE,GPIO_Pin_14);
 	
 	//开启指示灯
-	LED_ON;
+	LED_POWER_OFF();
 }
 
-//修改对应某一楼层的译码器使能引脚输入
-void UpdateEncoderEnInput(uint8_t relayID, CtrInput_TypeDef ctrInput)
+//译码器使能引脚控制函数
+void GPIO_EncoderEnableCtrl(uint8_t switchID, CtrInput_TypeDef ctrInput)
 {
-	if(relayID > RELAY_ID_MAX)
+	if(switchID > SWITCH_ID_MAX)
 		return;
-	switch(relayID / DECODER_OPIN_NUM)
+	switch(switchID / DECODER_OPIN_NUM)
 	{
 	case 0:
 		{
@@ -146,13 +146,14 @@ void UpdateEncoderEnInput(uint8_t relayID, CtrInput_TypeDef ctrInput)
 	}
 }
 //更新对应某一楼层的译码器数据输出
-void floorButtonControl(int16_t floorID, CtrInput_TypeDef ctrInput)
+void GPIO_FloorButtonCtrl(int16_t floorID, CtrInput_TypeDef ctrInput)
 {
-	uint8_t output,relayID;
-	relayID = convertFloorIDToRelayID(floorID);
-	//relayID = floorID;
-	//判断输入越界
-	if(relayID > RELAY_ID_MAX) return;
+	uint8_t output,switchID;
+	//将楼层ID通过查表方式转化为继电器ID
+	switchID = convertFloorIDToSwitchID(floorID);
+	//switchID = floorID;
+	//判断输入是否越界
+	if(switchID > SWITCH_ID_MAX) return;
 	//如果是DISABLE,拉高所有的译码器使能位，译码器就不会再输出
 	if(!ctrInput)
 	{
@@ -167,8 +168,8 @@ void floorButtonControl(int16_t floorID, CtrInput_TypeDef ctrInput)
 		return;
 	}
 	//计算译码输出
-	output = relayID % DECODER_OPIN_NUM;
-	switch(relayID / DECODER_OPIN_NUM)
+	output = switchID % DECODER_OPIN_NUM;
+	switch(switchID / DECODER_OPIN_NUM)
 	{
 	case 0:
 		{
@@ -366,13 +367,13 @@ void floorButtonControl(int16_t floorID, CtrInput_TypeDef ctrInput)
 		break;
 	}
 	//更新译码器输出
-	UpdateEncoderEnInput(relayID,CtrInput_Enable);
+	GPIO_EncoderEnableCtrl(switchID,CtrInput_Enable);
 	delay_ms(2);
-	UpdateEncoderEnInput(relayID,CtrInput_Disable);
+	GPIO_EncoderEnableCtrl(switchID,CtrInput_Disable);
 }
 
 //获取&填充当前设备的地址信息
-void Update_Current_ADDRL(void)
+void GPIO_GetDeviceAddr(void)
 {
 	uint8_t res;
 	
@@ -381,17 +382,15 @@ void Update_Current_ADDRL(void)
 	
 	//填充当前设备的低地址
 	res = 0;
-	if(ADDRL_BIT1) res += 4;
-	if(ADDRL_BIT2) res += 2;
-	if(ADDRL_BIT3) res += 1;
+	if(GET_ADDRL_BIT1()) res += 4;
+	if(GET_ADDRL_BIT2()) res += 2;
+	if(GET_ADDRL_BIT3()) res += 1;
 	sysTaskStatus.localAddrL = res;
 	
 	//填充当前设备的信道
 	res = 0;
-	if(CHANNEL_BIT1) res += 4;
-	if(CHANNEL_BIT2) res += 2;
-	if(CHANNEL_BIT3) res += 1;
+	if(GET_CHANNEL_BIT1()) res += 4;
+	if(GET_CHANNEL_BIT2()) res += 2;
+	if(GET_CHANNEL_BIT3()) res += 1;
 	sysTaskStatus.localChannel = res;
-	
-	//printf("本地高地址：%x，低地址：%x，信道：%x.\r\n",sysTaskStatus.localAddrH,sysTaskStatus.localAddrL,sysTaskStatus.localChannel);
 }

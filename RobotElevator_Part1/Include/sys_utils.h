@@ -3,16 +3,12 @@
 
 #include "stm32f10x.h"
 #include "sys_param.h"
-#include "gpio.h"
-#include "lora.h"
+#include "stdio.h"
 
-#define NEXT_TRIGGER_DELAY	3 	//3*500ms=1500s延时长度（从前一次按下楼层按钮，到下一次按下楼层按钮之间的时间间隔）
-#define BASE_PERIOD					3 	//3*500ms=1500ms控制按下电梯楼层按钮最少需要的时间
+#define DEBUG_BOUND					9600//调试输出串口的波特率
 
-//定时器初始化
-void TIMER_Init(void);
-//延时初始化
-void delay_Init(void);
+//常用工具初始化
+void Utils_ModuleInit(void);
 //延时nus								   
 void delay_us(u32 nus);
 //延时nms,nms<=1864 
@@ -24,5 +20,7 @@ void SYSEvent_Set(SYSEvent event_in);
 void SYSEvent_Clr(SYSEvent event_in);
 //CRC-8
 uint8_t crc8(const uint8_t *buff, size_t n);
-	
+//通过floorID获得relayID
+uint8_t convertFloorIDToSwitchID(int16_t floorID);
+
 #endif /*__SYS_UTILS_H__*/
